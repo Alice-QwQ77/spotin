@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.env
+.env.*
+
+singin.saz
+*.saz
+login_flow.json
+cookies.json
+data/
+
+wireproxy.conf
+wireguard.conf
+wgcf-account.toml
+wgcf-profile.conf
+*.log
