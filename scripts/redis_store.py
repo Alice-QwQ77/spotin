@@ -22,38 +22,44 @@ def get_client() -> redis.Redis:
 
 
 def load_json(key: str) -> dict[str, Any] | None:
-    client = get_client()
-    payload = client.get(key)
-    if not payload:
-        return None
     try:
+        client = get_client()
+        payload = client.get(key)
+        if not payload:
+            return None
         return json.loads(payload)
-    except json.JSONDecodeError:
+    except (redis.RedisError, json.JSONDecodeError, OSError):
         return None
 
 
 def save_json(key: str, data: dict[str, Any]) -> None:
-    client = get_client()
-    client.set(key, json.dumps(data, ensure_ascii=False))
+    try:
+        client = get_client()
+        client.set(key, json.dumps(data, ensure_ascii=False))
+    except (redis.RedisError, OSError):
+        return
 
 
 def load_cookies() -> list[dict[str, Any]] | None:
-    client = get_client()
-    payload = client.get(DEFAULT_COOKIE_KEY)
-    if not payload:
-        return None
     try:
+        client = get_client()
+        payload = client.get(DEFAULT_COOKIE_KEY)
+        if not payload:
+            return None
         value = json.loads(payload)
-    except json.JSONDecodeError:
+        if isinstance(value, list):
+            return value
         return None
-    if isinstance(value, list):
-        return value
-    return None
+    except (redis.RedisError, json.JSONDecodeError, OSError):
+        return None
 
 
 def save_cookies(cookies: list[dict[str, Any]]) -> None:
-    client = get_client()
-    client.set(DEFAULT_COOKIE_KEY, json.dumps(cookies, ensure_ascii=False))
+    try:
+        client = get_client()
+        client.set(DEFAULT_COOKIE_KEY, json.dumps(cookies, ensure_ascii=False))
+    except (redis.RedisError, OSError):
+        return
 
 
 def load_config() -> dict[str, Any] | None:
