@@ -15,6 +15,7 @@ import {
 } from "./service_state.mjs";
 
 const DEFAULT_CONTINUE_URL = "https://open.spotify.com/";
+const DEFAULT_VALIDATE_URL = "https://www.spotify.com/account/overview/";
 const DEFAULT_LOCALE = "zh-CN";
 
 const COOKIE_BUTTON_PATTERNS = [
@@ -259,11 +260,13 @@ async function dismissBanners(page) {
 
 async function looksLoggedIn(context, page) {
   const currentUrl = page.url().toLowerCase();
-  if (currentUrl.includes("open.spotify.com") && !currentUrl.includes("login")) {
+  if (currentUrl.includes("spotify.com/account/overview")) {
     return true;
   }
   const cookies = await context.cookies();
-  return cookies.some((cookie) => cookie.name === "sp_dc" && cookie.value);
+  return cookies.some(
+    (cookie) => (cookie.name === "sp_dc" || cookie.name === "sp_key") && cookie.value,
+  );
 }
 
 async function pageText(page, selectors) {
@@ -356,9 +359,13 @@ async function waitForResult(page, context, timeoutSeconds, manualTimeoutSeconds
   throw new Error(`Login did not complete within ${timeoutSeconds + manualTimeoutSeconds} seconds.`);
 }
 
-async function touchSession(page, context, continueUrl) {
-  await page.goto(continueUrl, { waitUntil: "domcontentloaded" });
+async function touchSession(page, context) {
+  await page.goto(DEFAULT_VALIDATE_URL, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(3000);
+  const currentUrl = page.url().toLowerCase();
+  if (currentUrl.includes("accounts.spotify.com") || currentUrl.includes("/login")) {
+    throw new Error("Stored session redirected to Spotify login.");
+  }
   if (!(await looksLoggedIn(context, page))) {
     throw new Error("Stored session is not logged in.");
   }
@@ -466,7 +473,7 @@ async function run(args, storage) {
     if (args.skipIfValid || args.refreshOnly) {
       log("Checking stored session...");
       try {
-        await touchSession(page, context, args.continueUrl);
+        await touchSession(page, context);
         const cookieSummary = await persistCookies(
           context,
           storage,
@@ -555,7 +562,7 @@ async function run(args, storage) {
     }
 
     log("Spotify login succeeded, refreshing target page...");
-    await touchSession(page, context, args.continueUrl);
+    await touchSession(page, context);
     const cookieSummary = await persistCookies(
       context,
       storage,
