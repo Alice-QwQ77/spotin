@@ -405,6 +405,7 @@ export async function createStorage({
 export async function collectStatusSnapshot(storage) {
   const service = await storage.readStatus();
   const cookies = await storage.readCookies();
+  const latestSuccessScreenshot = await storage.readArtifactMeta("login_success.png");
   const latestFailureScreenshot = await storage.readArtifactMeta("login_failed.png");
   const latestFormScreenshot = await storage.readArtifactMeta("password_form_not_found.png");
 
@@ -413,6 +414,7 @@ export async function collectStatusSnapshot(storage) {
     backend: storage.backend,
     cookieSummary: summarizeCookies(cookies),
     screenshots: {
+      loginSuccess: latestSuccessScreenshot,
       loginFailed: latestFailureScreenshot,
       passwordFormNotFound: latestFormScreenshot,
     },

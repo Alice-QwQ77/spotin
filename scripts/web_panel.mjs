@@ -507,6 +507,10 @@ function renderHtml() {
         <pre id="cookie-summary">Loading...</pre>
       </div>
       <div class="card">
+        <h2 class="section-title">Success Screenshot</h2>
+        <div id="success-screenshot-wrap" class="meta">No success screenshot yet.</div>
+      </div>
+      <div class="card">
         <h2 class="section-title">Failure Screenshot</h2>
         <div id="screenshot-wrap" class="meta">No screenshot yet.</div>
       </div>
@@ -604,6 +608,14 @@ function renderHtml() {
           .filter(Boolean)
           .join("\\n") || "No process output yet.";
       document.getElementById("cookie-summary").textContent = stringify(payload.cookieSummary || {});
+
+      const successWrap = document.getElementById("success-screenshot-wrap");
+      if (payload.screenshots?.loginSuccess?.exists) {
+        successWrap.innerHTML =
+          '<img alt="Latest success screenshot" src="/artifacts/login_success.png?ts=' + Date.now() + '" />';
+      } else {
+        successWrap.textContent = "No success screenshot yet.";
+      }
 
       const screenshotWrap = document.getElementById("screenshot-wrap");
       if (payload.screenshots?.loginFailed?.exists) {
@@ -819,8 +831,17 @@ const server = createServer(async (request, response) => {
       return json(response, 202, { ok: true, ...result });
     }
 
-    if (request.method === "GET" && url.pathname === "/artifacts/login_failed.png") {
-      const artifact = await storage.readArtifactContent("login_failed.png");
+    if (request.method === "GET" && url.pathname.startsWith("/artifacts/")) {
+      const name = url.pathname.replace("/artifacts/", "");
+      const allowedArtifacts = new Set([
+        "login_success.png",
+        "login_failed.png",
+        "password_form_not_found.png",
+      ]);
+      if (!allowedArtifacts.has(name)) {
+        return text(response, 404, "Not found");
+      }
+      const artifact = await storage.readArtifactContent(name);
       if (!artifact) {
         return text(response, 404, "Not found");
       }

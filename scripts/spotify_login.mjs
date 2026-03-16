@@ -474,6 +474,7 @@ async function run(args, storage) {
       log("Checking stored session...");
       try {
         await touchSession(page, context);
+        await captureDebug(page, storage, "login_success");
         const cookieSummary = await persistCookies(
           context,
           storage,
@@ -563,6 +564,7 @@ async function run(args, storage) {
 
     log("Spotify login succeeded, refreshing target page...");
     await touchSession(page, context);
+    await captureDebug(page, storage, "login_success");
     const cookieSummary = await persistCookies(
       context,
       storage,
