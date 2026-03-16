@@ -75,6 +75,8 @@ function isAuthorized(request) {
 function buildLoginArgs({
   skipIfValid = false,
   refreshOnly = false,
+  playUrl = "",
+  playAfterLogin = false,
   headless = PANEL_HEADLESS,
 } = {}) {
   const args = [
@@ -92,6 +94,12 @@ function buildLoginArgs({
   }
   if (refreshOnly) {
     args.push("--refresh-only");
+  }
+  if (playUrl) {
+    args.push("--play-url", playUrl);
+  }
+  if (playAfterLogin) {
+    args.push("--play-after-login");
   }
   return args;
 }
@@ -168,11 +176,11 @@ function triggerCheck(reason = "manual") {
   });
 }
 
-function triggerRefresh(reason = "manual_refresh") {
+function triggerRefresh(reason = "manual_refresh", options = {}) {
   return spawnLoginProcess({
     action: "refresh",
     reason,
-    args: buildLoginArgs({ refreshOnly: true }),
+    args: buildLoginArgs({ refreshOnly: true, ...options }),
   });
 }
 
@@ -453,6 +461,8 @@ function renderHtml() {
         <div class="meta" id="next-auto-refresh">-</div>
         <div class="metric" style="margin-top:12px;">Refresh cadence</div>
         <div class="meta" id="refresh-cadence">-</div>
+        <div class="metric" style="margin-top:12px;">Last playback</div>
+        <div class="meta" id="last-playback">-</div>
         <div class="metric" style="margin-top:12px;">Last message</div>
         <div class="meta" id="last-message">-</div>
       </div>
@@ -490,7 +500,11 @@ function renderHtml() {
         <div class="form-grid">
           <input id="username-input" type="text" autocomplete="username" placeholder="Spotify email or username" />
           <input id="password-input" type="password" autocomplete="current-password" placeholder="Spotify password" />
-          <button id="login-btn">Start Login</button>
+          <input id="play-url-input" type="text" placeholder="Optional Spotify track / album / playlist URL for playback" />
+          <div class="inline-actions">
+            <button id="login-btn">Start Login</button>
+            <button id="play-now-btn" class="secondary">Play On Current Session</button>
+          </div>
           <div class="meta">Credentials are passed only to the login child process and are not written to Redis.</div>
         </div>
       </div>
@@ -518,10 +532,14 @@ function renderHtml() {
   </div>
   <script>
     const tokenInput = document.getElementById("token-input");
+    const playUrlInput = document.getElementById("play-url-input");
     const feedback = document.getElementById("panel-feedback");
     const savedToken = localStorage.getItem("panelToken") || "";
+    const savedPlayUrl = localStorage.getItem("playUrl") || "";
     tokenInput.value = savedToken;
+    playUrlInput.value = savedPlayUrl;
     tokenInput.addEventListener("change", () => localStorage.setItem("panelToken", tokenInput.value.trim()));
+    playUrlInput.addEventListener("change", () => localStorage.setItem("playUrl", playUrlInput.value.trim()));
 
     function headers() {
       const token = tokenInput.value.trim();
@@ -600,6 +618,11 @@ function renderHtml() {
       document.getElementById("refresh-cadence").textContent = payload.autoRefresh?.enabled
         ? (payload.autoRefresh.minPerDay + " to " + payload.autoRefresh.maxPerDay + " runs/day")
         : "Disabled";
+      document.getElementById("last-playback").textContent = payload.service?.playback?.requested
+        ? (payload.service?.playback?.success === false
+            ? "Failed: " + fmt(payload.service?.playback?.error)
+            : "OK: " + fmt(payload.service?.playback?.url))
+        : "Not requested";
       document.getElementById("last-message").textContent = payload.service?.lastMessage || "-";
       document.getElementById("artifact-meta").textContent =
         "Screenshot dir: " + fmt(payload.backend?.screenshotDir || payload.screenshots?.loginFailed?.path);
@@ -638,13 +661,30 @@ function renderHtml() {
     }
 
     async function runRefreshNow() {
-      const payload = await submitJson("/api/refresh", {});
+      const playUrl = playUrlInput.value.trim();
+      const payload = await submitJson("/api/refresh", {
+        playUrl,
+        playAfterLogin: Boolean(playUrl),
+      });
       showFeedback(
         payload.started
-          ? "Session refresh started."
+          ? (playUrl ? "Session refresh and playback started." : "Session refresh started.")
           : "A job is already running.",
         !payload.started,
       );
+      await loadStatus();
+    }
+
+    async function playNow() {
+      const playUrl = playUrlInput.value.trim();
+      if (!playUrl) {
+        throw new Error("Enter a Spotify track, album, or playlist URL first.");
+      }
+      const payload = await submitJson("/api/refresh", {
+        playUrl,
+        playAfterLogin: true,
+      });
+      showFeedback(payload.started ? "Playback request started." : "A job is already running.");
       await loadStatus();
     }
 
@@ -669,12 +709,22 @@ function renderHtml() {
     async function startLogin() {
       const username = document.getElementById("username-input").value.trim();
       const password = document.getElementById("password-input").value;
+      const playUrl = playUrlInput.value.trim();
       if (!username || !password) {
         throw new Error("Username and password are required.");
       }
-      const payload = await submitJson("/api/login", { username, password });
+      const payload = await submitJson("/api/login", {
+        username,
+        password,
+        playUrl,
+        playAfterLogin: Boolean(playUrl),
+      });
       document.getElementById("password-input").value = "";
-      showFeedback(payload.started ? "Credential login started." : "A job is already running.");
+      showFeedback(
+        payload.started
+          ? (playUrl ? "Credential login and playback started." : "Credential login started.")
+          : "A job is already running.",
+      );
       await loadStatus();
     }
 
@@ -686,6 +736,7 @@ function renderHtml() {
     document.getElementById("refresh-btn").addEventListener("click", () => loadStatus().catch(showError));
     document.getElementById("refresh-now-btn").addEventListener("click", () => runRefreshNow().catch(showError));
     document.getElementById("check-btn").addEventListener("click", () => runCheck().catch(showError));
+    document.getElementById("play-now-btn").addEventListener("click", () => playNow().catch(showError));
     document.getElementById("cookie-save-btn").addEventListener("click", () => importCookies(false).catch(showError));
     document.getElementById("cookie-check-btn").addEventListener("click", () => importCookies(true).catch(showError));
     document.getElementById("login-btn").addEventListener("click", () => startLogin().catch(showError));
@@ -748,8 +799,12 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/api/refresh") {
-      await requestBody(request);
-      const result = triggerRefresh("manual_refresh");
+      const body = await parseJsonBody(request);
+      const playUrl = String(body.playUrl || "").trim();
+      const result = triggerRefresh("manual_refresh", {
+        playUrl,
+        playAfterLogin: body.playAfterLogin === true || Boolean(playUrl),
+      });
       if (!result.started) {
         return json(response, 409, { error: "Another job is already running." });
       }
@@ -801,6 +856,7 @@ const server = createServer(async (request, response) => {
       const body = await parseJsonBody(request);
       const username = String(body.username || "").trim();
       const password = String(body.password || "");
+      const playUrl = String(body.playUrl || "").trim();
       const headless = body.headless === false ? false : PANEL_HEADLESS;
 
       if (!username || !password) {
@@ -810,11 +866,16 @@ const server = createServer(async (request, response) => {
       const result = spawnLoginProcess({
         action: "login",
         reason: "panel_login",
-        args: buildLoginArgs({ headless }),
+        args: buildLoginArgs({
+          headless,
+          playUrl,
+          playAfterLogin: body.playAfterLogin === true || Boolean(playUrl),
+        }),
         env: {
           SPOTIFY_USERNAME: username,
           SPOTIFY_PASSWORD: password,
           SPOTIFY_HEADLESS: headless ? "1" : "0",
+          ...(playUrl ? { SPOTIFY_PLAY_URL: playUrl, SPOTIFY_PLAY_AFTER_LOGIN: "1" } : {}),
         },
       });
 

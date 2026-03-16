@@ -7,6 +7,7 @@ Spotify session refresh service built with Node.js, Playwright, Redis, and a sma
 - Redis-backed cookie and status storage
 - Local screenshot artifacts for failed login attempts
 - Web panel for status checks, cookie import, manual login, and immediate refresh
+- Optional playback action after login or refresh using a Spotify track / album / playlist URL
 - Automatic random session refresh 2 to 3 times per day inside the container
 
 ## Environment
@@ -17,6 +18,8 @@ Spotify session refresh service built with Node.js, Playwright, Redis, and a sma
 - `AUTO_REFRESH_ENABLED`: enable random scheduled refresh, default `1`
 - `AUTO_REFRESH_MIN_PER_DAY`: minimum scheduled refresh count, default `2`
 - `AUTO_REFRESH_MAX_PER_DAY`: maximum scheduled refresh count, default `3`
+- `SPOTIFY_PLAY_URL`: optional Spotify URL to open and play after a successful login or refresh
+- `SPOTIFY_PLAY_AFTER_LOGIN`: set to `1` to force playback after success, default auto-enables when `SPOTIFY_PLAY_URL` is set
 
 ## Run locally
 

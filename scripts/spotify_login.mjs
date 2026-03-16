@@ -16,6 +16,7 @@ import {
 
 const DEFAULT_CONTINUE_URL = "https://open.spotify.com/";
 const DEFAULT_VALIDATE_URL = "https://www.spotify.com/account/overview/";
+const DEFAULT_PLAY_URL = "";
 const DEFAULT_LOCALE = "zh-CN";
 
 const COOKIE_BUTTON_PATTERNS = [
@@ -67,12 +68,34 @@ const ERROR_SELECTORS = [
   '[role="alert"]',
 ];
 
+const PLAY_BUTTON_PATTERNS = [
+  /play/i,
+  /play now/i,
+  /\u64ad\u653e/i,
+];
+
+const PLAY_BUTTON_SELECTORS = [
+  '[data-testid="play-button"]',
+  '[data-testid="control-button-play"]',
+  'button[aria-label*="Play"]',
+  'button[title*="Play"]',
+  'button[aria-label*="\u64ad\u653e"]',
+];
+
+const PAUSE_BUTTON_SELECTORS = [
+  '[data-testid="control-button-pause"]',
+  'button[aria-label*="Pause"]',
+  'button[title*="Pause"]',
+  'button[aria-label*="\u6682\u505c"]',
+];
+
 function parseArgs(argv) {
   const args = {
     username: process.env.SPOTIFY_USERNAME ?? "",
     password: process.env.SPOTIFY_PASSWORD ?? "",
     locale: process.env.SPOTIFY_LOCALE ?? DEFAULT_LOCALE,
     continueUrl: process.env.SPOTIFY_CONTINUE_URL ?? DEFAULT_CONTINUE_URL,
+    playUrl: process.env.SPOTIFY_PLAY_URL ?? DEFAULT_PLAY_URL,
     cookieIn: process.env.SPOTIFY_COOKIE_IN ?? "",
     cookieOut: process.env.SPOTIFY_COOKIE_OUT ?? "",
     screenshotDir: process.env.SPOTIFY_SCREENSHOT_DIR ?? DEFAULT_SCREENSHOT_DIR,
@@ -83,6 +106,10 @@ function parseArgs(argv) {
     headless: process.env.SPOTIFY_HEADLESS !== "0",
     loginTimeout: Number(process.env.SPOTIFY_LOGIN_TIMEOUT || 120),
     manualTimeout: Number(process.env.SPOTIFY_MANUAL_TIMEOUT || 180),
+    playAfterLogin:
+      process.env.SPOTIFY_PLAY_AFTER_LOGIN
+        ? process.env.SPOTIFY_PLAY_AFTER_LOGIN !== "0"
+        : Boolean(process.env.SPOTIFY_PLAY_URL),
     skipIfValid: false,
     refreshOnly: false,
     keepOpen: false,
@@ -106,6 +133,10 @@ function parseArgs(argv) {
         break;
       case "--continue-url":
         args.continueUrl = next ?? DEFAULT_CONTINUE_URL;
+        i += 1;
+        break;
+      case "--play-url":
+        args.playUrl = next ?? DEFAULT_PLAY_URL;
         i += 1;
         break;
       case "--cookie-in":
@@ -150,6 +181,12 @@ function parseArgs(argv) {
         args.manualTimeout = Number(next ?? 180);
         i += 1;
         break;
+      case "--play-after-login":
+        args.playAfterLogin = true;
+        break;
+      case "--no-play-after-login":
+        args.playAfterLogin = false;
+        break;
       case "--skip-if-valid":
         args.skipIfValid = true;
         break;
@@ -181,6 +218,7 @@ Options:
   --password <value>
   --locale <value>
   --continue-url <value>
+  --play-url <value>
   --cookie-in <value>
   --cookie-out <value>
   --status-file <value>
@@ -191,6 +229,7 @@ Options:
   --headless | --no-headless
   --login-timeout <seconds>
   --manual-timeout <seconds>
+  --play-after-login | --no-play-after-login
   --skip-if-valid
   --refresh-only
   --keep-open`);
@@ -252,6 +291,19 @@ async function fillFirst(page, selectors, value) {
   }
   await locator.fill(value);
   return true;
+}
+
+async function clickFirst(page, selectors) {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    try {
+      if ((await locator.count()) > 0 && (await locator.isVisible())) {
+        await locator.click();
+        return true;
+      }
+    } catch {}
+  }
+  return false;
 }
 
 async function dismissBanners(page) {
@@ -371,6 +423,92 @@ async function touchSession(page, context) {
   }
 }
 
+async function playTrack(page, context, playUrl) {
+  if (!playUrl) {
+    return {
+      requested: false,
+      success: null,
+      url: "",
+      currentUrl: page.url(),
+    };
+  }
+
+  await page.goto(playUrl, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(4000);
+  await dismissBanners(page);
+
+  const currentUrl = page.url().toLowerCase();
+  if (currentUrl.includes("accounts.spotify.com") || currentUrl.includes("/login")) {
+    throw new Error("Playback page redirected to Spotify login.");
+  }
+
+  if (await firstVisible(page, PAUSE_BUTTON_SELECTORS)) {
+    return {
+      requested: true,
+      success: true,
+      url: playUrl,
+      currentUrl: page.url(),
+      alreadyPlaying: true,
+    };
+  }
+
+  const clicked = (await clickFirst(page, PLAY_BUTTON_SELECTORS))
+    || (await clickByPatterns(page, PLAY_BUTTON_PATTERNS));
+  if (!clicked) {
+    throw new Error("Could not find a Spotify play button on the target page.");
+  }
+
+  await page.waitForTimeout(5000);
+  const pauseVisible = await firstVisible(page, PAUSE_BUTTON_SELECTORS);
+  if (!pauseVisible) {
+    throw new Error("Play button was clicked, but playback did not switch into a playing state.");
+  }
+
+  return {
+    requested: true,
+    success: true,
+    url: playUrl,
+    currentUrl: page.url(),
+    alreadyPlaying: false,
+  };
+}
+
+async function maybePlayAfterLogin(page, context, storage, args, updateStatus, basePhase) {
+  if (!args.playAfterLogin || !args.playUrl) {
+    return {
+      requested: false,
+      success: null,
+      url: args.playUrl || "",
+    };
+  }
+
+  await updateStatus({
+    state: "running",
+    phase: `${basePhase}_playback`,
+    startedAt: new Date().toISOString(),
+    lastMessage: `Opening playback target: ${args.playUrl}`,
+  });
+
+  try {
+    const playback = await playTrack(page, context, args.playUrl);
+    await captureDebug(page, storage, "playback_success");
+    return {
+      ...playback,
+      finishedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    await captureDebug(page, storage, "playback_failed");
+    return {
+      requested: true,
+      success: false,
+      url: args.playUrl,
+      error: error.message,
+      currentUrl: page.url(),
+      finishedAt: new Date().toISOString(),
+    };
+  }
+}
+
 async function exportCookiesToFile(cookies, outputPath) {
   ensureParent(outputPath);
   fs.writeFileSync(outputPath, JSON.stringify(cookies, null, 2), "utf8");
@@ -403,6 +541,8 @@ async function run(args, storage) {
   const sanitizedArgs = {
     locale: args.locale,
     continueUrl: args.continueUrl,
+    playUrl: args.playUrl,
+    playAfterLogin: args.playAfterLogin,
     cookieIn: args.cookieIn ? path.resolve(args.cookieIn) : "",
     cookieOut: args.cookieOut ? path.resolve(args.cookieOut) : "",
     screenshotDir: path.resolve(args.screenshotDir),
@@ -474,6 +614,14 @@ async function run(args, storage) {
       log("Checking stored session...");
       try {
         await touchSession(page, context);
+        const playback = await maybePlayAfterLogin(
+          page,
+          context,
+          storage,
+          args,
+          updateStatus,
+          args.refreshOnly ? "refresh_only" : "skip_if_valid",
+        );
         await captureDebug(page, storage, "login_success");
         const cookieSummary = await persistCookies(
           context,
@@ -482,16 +630,21 @@ async function run(args, storage) {
         );
         log("Existing Spotify session is still valid.");
         await updateStatus({
-          state: "ok",
+          state: playback.success === false ? "warn" : "ok",
           phase: args.refreshOnly ? "refresh_only" : "skip_if_valid",
           startedAt: new Date().toISOString(),
           finishedAt: new Date().toISOString(),
           lastSuccessAt: new Date().toISOString(),
-          lastMessage: args.refreshOnly
-            ? "Stored Spotify session was refreshed successfully."
-            : "Existing Spotify session is still valid.",
+          lastMessage: playback.success === false
+            ? `Session is valid, but playback failed: ${playback.error}`
+            : args.playAfterLogin && args.playUrl
+              ? "Spotify session is valid and playback was started."
+              : args.refreshOnly
+                ? "Stored Spotify session was refreshed successfully."
+                : "Existing Spotify session is still valid.",
           args: sanitizedArgs,
           cookieSummary,
+          playback,
           backend: storage.backend,
         });
         if (args.keepOpen && !args.headless) {
@@ -564,6 +717,14 @@ async function run(args, storage) {
 
     log("Spotify login succeeded, refreshing target page...");
     await touchSession(page, context);
+    const playback = await maybePlayAfterLogin(
+      page,
+      context,
+      storage,
+      args,
+      updateStatus,
+      "login_succeeded",
+    );
     await captureDebug(page, storage, "login_success");
     const cookieSummary = await persistCookies(
       context,
@@ -572,14 +733,19 @@ async function run(args, storage) {
     );
     log("Stored session updated.");
     await updateStatus({
-      state: "ok",
+      state: playback.success === false ? "warn" : "ok",
       phase: "login_succeeded",
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       lastSuccessAt: new Date().toISOString(),
-      lastMessage: "Stored session updated.",
+      lastMessage: playback.success === false
+        ? `Stored session updated, but playback failed: ${playback.error}`
+        : args.playAfterLogin && args.playUrl
+          ? "Stored session updated and playback was started."
+          : "Stored session updated.",
       args: sanitizedArgs,
       cookieSummary,
+      playback,
       backend: storage.backend,
     });
 
