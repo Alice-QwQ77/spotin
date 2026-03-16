@@ -534,6 +534,7 @@ function renderHtml() {
     const tokenInput = document.getElementById("token-input");
     const playUrlInput = document.getElementById("play-url-input");
     const feedback = document.getElementById("panel-feedback");
+    const artifactUrls = new Map();
     const savedToken = localStorage.getItem("panelToken") || "";
     const savedPlayUrl = localStorage.getItem("playUrl") || "";
     tokenInput.value = savedToken;
@@ -564,6 +565,32 @@ function renderHtml() {
       feedback.style.display = "block";
       feedback.className = isError ? "feedback error" : "feedback";
       feedback.textContent = message;
+    }
+
+    function clearArtifact(containerId, emptyText) {
+      const previousUrl = artifactUrls.get(containerId);
+      if (previousUrl) {
+        URL.revokeObjectURL(previousUrl);
+        artifactUrls.delete(containerId);
+      }
+      document.getElementById(containerId).textContent = emptyText;
+    }
+
+    async function renderArtifact(containerId, path, altText, emptyText) {
+      const response = await fetch(path, { headers: headers() });
+      if (!response.ok) {
+        clearArtifact(containerId, emptyText);
+        return;
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const previousUrl = artifactUrls.get(containerId);
+      if (previousUrl) {
+        URL.revokeObjectURL(previousUrl);
+      }
+      artifactUrls.set(containerId, url);
+      document.getElementById(containerId).innerHTML =
+        '<img alt="' + altText + '" src="' + url + '" />';
     }
 
     async function submitJson(url, payload) {
@@ -634,18 +661,26 @@ function renderHtml() {
 
       const successWrap = document.getElementById("success-screenshot-wrap");
       if (payload.screenshots?.loginSuccess?.exists) {
-        successWrap.innerHTML =
-          '<img alt="Latest success screenshot" src="/artifacts/login_success.png?ts=' + Date.now() + '" />';
+        await renderArtifact(
+          "success-screenshot-wrap",
+          "/artifacts/login_success.png",
+          "Latest success screenshot",
+          "No success screenshot yet.",
+        );
       } else {
-        successWrap.textContent = "No success screenshot yet.";
+        clearArtifact("success-screenshot-wrap", "No success screenshot yet.");
       }
 
       const screenshotWrap = document.getElementById("screenshot-wrap");
       if (payload.screenshots?.loginFailed?.exists) {
-        screenshotWrap.innerHTML =
-          '<img alt="Latest failure screenshot" src="/artifacts/login_failed.png?ts=' + Date.now() + '" />';
+        await renderArtifact(
+          "screenshot-wrap",
+          "/artifacts/login_failed.png",
+          "Latest failure screenshot",
+          "No screenshot yet.",
+        );
       } else {
-        screenshotWrap.textContent = "No screenshot yet.";
+        clearArtifact("screenshot-wrap", "No screenshot yet.");
       }
     }
 
